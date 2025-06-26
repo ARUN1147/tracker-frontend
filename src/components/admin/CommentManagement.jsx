@@ -7,10 +7,8 @@ import Button from '../common/Button';
 import Modal from '../common/Modal';
 import Spinner from '../common/Spinner';
 import appContext from '../../context/AppContext';
-import io from 'socket.io-client';
 
 const CommentManagement = () => {
-
   const [comments, setComments] = useState([]);
   const [filteredComments, setFilteredComments] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -26,15 +24,8 @@ const CommentManagement = () => {
   
   const { subdomain } = useContext(appContext);
 
-  const telegramSocket = io('http://localhost:5000', {
-    transports: ['websocket'],
-    withCredentials: true
-  });
-
   // Load all comments
   useEffect(() => {
-
-    
     const loadComments = async () => {
       setIsLoading(true);
       try {
@@ -58,23 +49,6 @@ const CommentManagement = () => {
     };
     
     loadComments();
-
-    telegramSocket.on('telegramMessage', msg => {
-          // msg = { fromName, text, timestamp }
-          setComments(prev => [
-            {
-              _id: `tg-${msg.timestamp}`,
-              worker: { name: msg.fromName, telegramId: msg.from },
-              text: msg.text,
-              createdAt: msg.timestamp,
-              replies: []
-            },
-            ...prev
-          ]);
-        });
-        return () => {
-          telegramSocket.off('telegramMessage');
-        };
   }, []);
   
   // Filter comments when search term or department filter changes
@@ -133,11 +107,6 @@ const CommentManagement = () => {
     
     try {
       const updatedComment = await addReply(selectedComment._id, { text: replyText });
-
-      telegramSocket.emit('sendTelegramMessage', {
-        to: selectedComment.worker.telegramId,
-            text: replyText
-          });
       
       // Update local state
       setComments(prev => 

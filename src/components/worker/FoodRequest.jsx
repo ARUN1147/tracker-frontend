@@ -191,40 +191,35 @@ const FoodRequest = () => {
         <h2 className="text-xl font-bold mb-4">Submit Food Request</h2>
         
         {/* Meal Selection */}
-        <div className="mb-6">
-          <p className="block text-sm font-medium mb-3">Select Meal</p>
-          <div className="flex space-x-3">
+        <div className="mb-4">
+          <label className="block text-sm font-medium mb-2">Select Meal</label>
+          <select
+            value={selectedMeal}
+            onChange={(e) => setSelectedMeal(e.target.value)}
+            className="w-full p-2 border rounded-md"
+            disabled={loading}
+          >
+            <option value="">Choose a meal...</option>
             {['breakfast', 'lunch', 'dinner'].map(meal => {
               const isAvailable = isMealAvailable(meal);
               const isSubmitted = submitted[meal];
-              const selected = selectedMeal === meal;
+              const isDisabled = !isAvailable || isSubmitted;
+              
               return (
-                <button
-                  key={meal}
-                  type="button"
-                  onClick={() => setSelectedMeal(meal)}
-                  disabled={!isAvailable || isSubmitted || loading}
-                  className={`
-                    flex-1 py-2 px-4 rounded-lg border transition 
-                    ${selected 
-                      ? 'border-blue-500 bg-blue-50' 
-                      : 'border-gray-300 bg-white hover:bg-gray-100'}
-                    ${(!isAvailable || isSubmitted) && 'opacity-50 cursor-not-allowed'}
-                  `}
+                <option 
+                  key={meal} 
+                  value={meal} 
+                  disabled={isDisabled}
                 >
-                  <span className="block font-semibold capitalize">{meal}</span>
-                  <span className="block text-xs text-gray-500 mt-1">
-                    {isSubmitted 
-                      ? 'Submitted' 
-                      : isAvailable 
-                        ? 'Available' 
-                        : 'Closed'}
-                  </span>
-                </button>
+                  {meal.charAt(0).toUpperCase() + meal.slice(1)} 
+                  {isSubmitted ? ' (Already Submitted)' : 
+                   !isAvailable ? ' (Not Available)' : ''}
+                </option>
               );
             })}
-          </div>
+          </select>
         </div>
+
         {/* Submit Button */}
         <Button 
           onClick={handleSubmit} 

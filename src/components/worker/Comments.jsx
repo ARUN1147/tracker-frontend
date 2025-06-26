@@ -12,16 +12,8 @@ import Card from '../common/Card';
 import Button from '../common/Button';
 import Spinner from '../common/Spinner';
 import appContext from '../../context/AppContext';
-import { io } from 'socket.io-client';
-
-const telegramSocket = io('http://localhost:5000', {
-  transports: ['websocket'],
-  withCredentials: true
-});
-
 
 const Comments = () => {
-  const telegramSocket = io("http://localhost:5000", { withCredentials: true });
   const [comments, setComments] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [commentText, setCommentText] = useState('');
@@ -30,7 +22,6 @@ const Comments = () => {
   const [replyTexts, setReplyTexts] = useState({});
 
   const { subdomain } = useContext(appContext);
-  
 
   // Load comments
   useEffect(() => {
@@ -48,22 +39,6 @@ const Comments = () => {
       }
     };
     fetchComments();
-    telegramSocket.on('telegramMessage', msg => {
-          // msg = { fromName, text, timestamp }
-          setComments(prev => [
-            {
-              _id: `tg-${msg.timestamp}`,
-              worker: { name: msg.fromName, telegramId: msg.from },
-              text: msg.text,
-              createdAt: msg.timestamp,
-              replies: []
-            },
-            ...prev
-          ]);
-        });
-        return () => {
-          telegramSocket.off('telegramMessage');
-        };
   }, []);
 
   // Handle comment submission
@@ -103,25 +78,6 @@ const Comments = () => {
     }
   };
 
-   // listen for incoming Telegram messages
-  useEffect(() => {
-      telegramSocket.on('telegramMessage', msg => {
-        setComments(prev => [
-          {
-            _id: `tg-${msg.timestamp}`,
-            worker: { name: msg.fromName, telegramId: msg.from },
-            text: msg.text,
-            createdAt: msg.timestamp,
-            replies: []
-          },
-          ...prev
-        ]);
-      });
-      return () => {
-        telegramSocket.off('telegramMessage');
-      };
-    }, []);
-
   // Handle reply submission
   const handleSubmitReply = async (commentId) => {
     const replyText = replyTexts[commentId];
@@ -133,11 +89,6 @@ const Comments = () => {
 
     try {
       const updatedComment = await addReply(commentId, { text: replyText.trim() });
-
-      telegramSocket.emit('sendTelegramMessage', {
-               to:   updatedComment.worker.telegramId,
-               text: replyText.trim()
-             });
 
       setComments(prev =>
         prev.map(comment =>
