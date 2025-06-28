@@ -59,7 +59,6 @@ const AttendanceManagement = () => {
             setWorker({ rfid: '' });
             setConfirmAction(null);
             fetchAttendanceData();
-            inputRef.current?.focus();
           })
           .catch(err => {
             console.error(err);
@@ -84,6 +83,13 @@ const AttendanceManagement = () => {
                 inputRef.current.focus();
               }
             }, [isModalOpen]);
+
+    useEffect(() => {
+              
+        if (isModalOpen && !confirmAction && inputRef.current) {
+            inputRef.current.focus();
+        }
+    }, [confirmAction, isModalOpen]);        
 
     const scanQRCode = () => {
         if (webcamRef.current) {
@@ -143,101 +149,114 @@ const filteredAttendance = attendanceData.filter(record => {
 const processedAttendance = processAttendanceByDay(filteredAttendance);
 
 function processAttendanceByDay(attendanceData) {
-    const grouped = {};
-    
-    // Helper function to convert 12-hour format to 24-hour format
-    function convertTo24Hour(time12h) {
-        const [time, modifier] = time12h.trim().split(' ');
-        let [hours, minutes, seconds] = time.split(':');
-        
-        hours = parseInt(hours, 10);
-        
-        if (modifier === 'AM') {
-            if (hours === 12) {
-                hours = 0;
-            }
-        } else if (modifier === 'PM') {
-            if (hours !== 12) {
-                hours += 12;
-            }
-        }
-        
-        return `${hours.toString().padStart(2, '0')}:${minutes}:${seconds || '00'}`;
-    }
-
-    // Helper function to parse time and return total minutes from midnight
-    function parseTimeToMinutes(timeStr) {
-        if (!timeStr) return 0;
+    // Helper to parse "10:51:40 AM" to seconds from midnight
+    function parseTime12hToSeconds(timeStr) {
+        if (typeof timeStr !== 'string') return 0;
         const [time, modifier] = timeStr.trim().split(' ');
         if (!time) return 0;
-        let [hours, minutes] = time.split(':').map(Number);
-        
-        if (modifier === 'PM' && hours !== 12) {
-            hours += 12;
-        } else if (modifier === 'AM' && hours === 12) {
-            hours = 0;
-        }
-        
-        return hours * 60 + (minutes || 0);
+        let [hours, minutes, seconds] = time.split(':').map(Number);
+        hours = hours || 0;
+        minutes = minutes || 0;
+        seconds = seconds || 0;
+        if (modifier && modifier.toUpperCase() === 'PM' && hours !== 12) hours += 12;
+        else if (modifier && modifier.toUpperCase() === 'AM' && hours === 12) hours = 0;
+        return hours * 3600 + minutes * 60 + seconds;
     }
-    // Group records by date and RFID
+
+    // Helper to parse "HH:mm:ss" duration to seconds
+    function parseDurationToSeconds(durationStr) {
+        if (typeof durationStr !== 'string') return 0;
+        const [hours, minutes, seconds] = durationStr.split(':').map(Number);
+        return (hours || 0) * 3600 + (minutes || 0) * 60 + (seconds || 0);
+    }
+
+    // Helper to format seconds to "HH:mm:ss"
+    function formatSecondsToDuration(totalSeconds) {
+        if (isNaN(totalSeconds) || totalSeconds < 0) return '00:00:00';
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = Math.floor(totalSeconds % 60);
+        return [hours, minutes, seconds].map(v => String(v).padStart(2, '0')).join(':');
+    }
+
+    // Step 1: Create a map to hold all display data, grouped by employee and date
+    const displayGroups = {};
     attendanceData.forEach(record => {
-        const dateKey = record.date ? record.date.split('T')[0] : 'Unknown';
+        const dateKey = new Date(record.date).toISOString().split('T')[0];
         const employeeKey = `${record.rfid || 'Unknown'}_${dateKey}`;
-        
-        if (!grouped[employeeKey]) {
-            grouped[employeeKey] = {
+        if (!displayGroups[employeeKey]) {
+            displayGroups[employeeKey] = {
                 ...record,
                 date: dateKey,
                 inTimes: [],
                 outTimes: [],
-                // Store the timestamp of the record to find the latest activity
-                latestTimestamp: new Date(record.createdAt).getTime()
+                duration: '00:00:00',
+                latestTimestamp: 0,
             };
-        } else {
-            // Update the latest timestamp if the current record is newer
-            grouped[employeeKey].latestTimestamp = Math.max(
-                grouped[employeeKey].latestTimestamp,
-                new Date(record.createdAt).getTime()
-            );
         }
-        
+        // Update latest timestamp for sorting
+        displayGroups[employeeKey].latestTimestamp = Math.max(
+            displayGroups[employeeKey].latestTimestamp,
+            new Date(record.createdAt).getTime()
+        );
+        // Populate in/out times for display
         if (record.presence) {
-            grouped[employeeKey].inTimes.push(record.time);
+            displayGroups[employeeKey].inTimes.push(record.time);
         } else {
-            grouped[employeeKey].outTimes.push(record.time);
+            displayGroups[employeeKey].outTimes.push(record.time);
         }
     });
-    
-    // Calculate duration for each day
-    Object.keys(grouped).forEach(key => {
-        const record = grouped[key];
-        const { inTimes, outTimes } = record;
+
+    // Step 2: Group punches by employee to process them chronologically
+    const punchesByRfid = attendanceData.reduce((acc, record) => {
+        const rfid = record.rfid || 'Unknown';
+        if (!acc[rfid]) acc[rfid] = [];
+        acc[rfid].push(record);
+        return acc;
+    }, {});
+
+    // Step 3: Process each employee's punches to calculate valid durations
+    for (const rfid in punchesByRfid) {
+        // Sort this employee's punches by time
+        const records = punchesByRfid[rfid].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
         
-        let totalMinutes = 0;
-        const minLength = Math.min(inTimes.length, outTimes.length);
+        const inPunchesStack = []; // Use a stack to find the most recent IN for an OUT
         
-        for (let i = 0; i < minLength; i++) {
-            const inMinutes = parseTimeToMinutes(inTimes[i]);
-            const outMinutes = parseTimeToMinutes(outTimes[i]);
-            
-            let diffMinutes = outMinutes - inMinutes;
-            
-            if (diffMinutes < 0) {
-                diffMinutes += 24 * 60; // Handle midnight crossing
+        for (const record of records) {
+            if (record.presence) { // It's an IN punch
+                inPunchesStack.push(record);
+            } else { // It's an OUT punch
+                if (inPunchesStack.length > 0) {
+                    const lastIn = inPunchesStack.pop(); // Pair with the most recent IN
+                    
+                    const inDate = new Date(lastIn.date).toISOString().split('T')[0];
+                    const outDate = new Date(record.date).toISOString().split('T')[0];
+
+                    // Rule: Only calculate duration if it's a same-day pair
+                    if (inDate === outDate) {
+                        const inSeconds = parseTime12hToSeconds(lastIn.time);
+                        const outSeconds = parseTime12hToSeconds(record.time);
+                        
+                        if (outSeconds > inSeconds) {
+                            const duration = outSeconds - inSeconds;
+                            const summaryKey = `${rfid}_${inDate}`;
+                            
+                            // Add the calculated duration to the correct display group
+                            if (displayGroups[summaryKey]) {
+                                const currentDurationSeconds = parseDurationToSeconds(displayGroups[summaryKey].duration);
+                                displayGroups[summaryKey].duration = formatSecondsToDuration(currentDurationSeconds + duration);
+                            }
+                        }
+                    }
+                    // If it's an overnight punch, the IN is popped from the stack and ignored, fulfilling the rule.
+                }
+                // If no matching IN punch is on the stack, this OUT punch is ignored.
             }
-            
-            totalMinutes += diffMinutes;
         }
-        
-        const hours = Math.floor(totalMinutes / 60);
-        const minutes = Math.floor(totalMinutes % 60);
-        
-        record.duration = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:00`;
-    });
-    
-    // Sort the grouped records by the latest activity timestamp in descending order
-    return Object.values(grouped).sort((a, b) => b.latestTimestamp - a.latestTimestamp);
+    }
+
+    // Return the processed display groups, sorted by the latest activity
+    return Object.values(displayGroups).sort((a, b) => b.latestTimestamp - a.latestTimestamp);
 }
     // Function to download attendance data as CSV
     const downloadAttendanceCSV = () => {

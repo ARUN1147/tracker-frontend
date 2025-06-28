@@ -67,81 +67,122 @@ const AttendanceReport = () => {
     return [h, m, s].map(x => String(x).padStart(2, '0')).join(':');
 }
   
-  /**
-   * groups raw records by date, collects in/out times, and computes duration
-   * expects each rec to have { date, time, type: 'IN'|'OUT', name, rfid }
-   */
-  function processAttendanceByDay(attendanceData) {
-    const grouped = {};
-    
-    // Helper function to parse time and return total minutes from midnight
-    function parseTimeToMinutes(timeStr) {
-        if (!timeStr) return 0;
+
+function processAttendanceByDay(attendanceData) {
+    // Helper to parse time string with AM/PM (e.g., "10:51:40 AM") to seconds from midnight
+    function parseTime12hToSeconds(timeStr) {
+        if (typeof timeStr !== 'string') return 0;
         const [time, modifier] = timeStr.trim().split(' ');
         if (!time) return 0;
-        let [hours, minutes] = time.split(':').map(Number);
-        
-        if (modifier === 'PM' && hours !== 12) {
-            hours += 12;
-        } else if (modifier === 'AM' && hours === 12) {
-            hours = 0;
-        }
-        
-        return hours * 60 + (minutes || 0);
+        let [hours, minutes, seconds] = time.split(':').map(Number);
+        hours = hours || 0;
+        minutes = minutes || 0;
+        seconds = seconds || 0;
+        if (modifier && modifier.toUpperCase() === 'PM' && hours !== 12) hours += 12;
+        else if (modifier && modifier.toUpperCase() === 'AM' && hours === 12) hours = 0;
+        return hours * 3600 + minutes * 60 + seconds;
     }
-    
-    // Group records by date and RFID
+
+    // Helper to parse a duration string "HH:mm:ss" into total seconds
+    function parseDurationToSeconds(durationStr) {
+        if (typeof durationStr !== 'string') return 0;
+        const [hours, minutes, seconds] = durationStr.split(':').map(Number);
+        return (hours || 0) * 3600 + (minutes || 0) * 60 + (seconds || 0);
+    }
+
+    // Helper to format total seconds into a "HH:mm:ss" duration string
+    function formatSecondsToDuration(totalSeconds) {
+        if (isNaN(totalSeconds) || totalSeconds < 0) return '00:00:00';
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = Math.floor(totalSeconds % 60);
+        return [hours, minutes, seconds].map(v => String(v).padStart(2, '0')).join(':');
+    }
+
+    // Step 1: Create a map to hold all display data, grouped by employee and date.
+    const displayGroups = {};
     attendanceData.forEach(record => {
-        const dateKey = record.date ? record.date.split('T')[0] : 'Unknown';
+        const dateKey = record.date ? new Date(record.date).toISOString().split('T')[0] : 'Unknown';
         const employeeKey = `${record.rfid || 'Unknown'}_${dateKey}`;
-        
-        if (!grouped[employeeKey]) {
-            grouped[employeeKey] = {
+        if (!displayGroups[employeeKey]) {
+            displayGroups[employeeKey] = {
                 ...record,
                 date: dateKey,
                 inTimes: [],
-                outTimes: []
+                outTimes: [],
+                duration: '00:00:00', // Initialize duration
+                latestTimestamp: 0,
             };
         }
-        
-        // In AttendanceManagement, presence is used. In AttendanceReport, type is used.
-        // We will assume 'type' exists in the data for AttendanceReport.
-        if (record.type === 'IN' || record.presence) { // Handles both possibilities
-            grouped[employeeKey].inTimes.push(record.time);
+        // Track the latest activity for sorting the final list
+        displayGroups[employeeKey].latestTimestamp = Math.max(
+            displayGroups[employeeKey].latestTimestamp,
+            new Date(record.createdAt).getTime()
+        );
+        // Populate in/out times for display
+        if (record.presence) {
+            displayGroups[employeeKey].inTimes.push(record.time);
         } else {
-            grouped[employeeKey].outTimes.push(record.time);
+            displayGroups[employeeKey].outTimes.push(record.time);
         }
     });
-    
-    // Calculate duration for each day
-    Object.keys(grouped).forEach(key => {
-        const record = grouped[key];
-        const { inTimes, outTimes } = record;
+
+    // Step 2: Group all punches by employee to process them chronologically
+    const punchesByRfid = attendanceData.reduce((acc, record) => {
+        const rfid = record.rfid || 'Unknown';
+        if (!acc[rfid]) acc[rfid] = [];
+        acc[rfid].push(record);
+        return acc;
+    }, {});
+
+    // Step 3: Process each employee's punches to calculate valid daily durations
+    for (const rfid in punchesByRfid) {
+        // Sort this employee's punches by time to ensure correct pairing order
+        const records = punchesByRfid[rfid].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
         
-        let totalMinutes = 0;
-        const minLength = Math.min(inTimes.length, outTimes.length);
+        const inPunchesStack = []; // Use a stack to pair the most recent IN with an OUT
         
-        for (let i = 0; i < minLength; i++) {
-            const inMinutes = parseTimeToMinutes(inTimes[i]);
-            const outMinutes = parseTimeToMinutes(outTimes[i]);
-            
-            let diffMinutes = outMinutes - inMinutes;
-            
-            if (diffMinutes < 0) {
-                diffMinutes += 24 * 60; // Handle midnight crossing
+        for (const record of records) {
+            if (record.presence) { // This is an IN punch
+                inPunchesStack.push(record);
+            } else { // This is an OUT punch
+                if (inPunchesStack.length > 0) {
+                    const lastIn = inPunchesStack.pop(); // Pair with the most recent IN
+                    
+                    const inDate = new Date(lastIn.date).toISOString().split('T')[0];
+                    const outDate = new Date(record.date).toISOString().split('T')[0];
+
+                    // Rule: Only calculate duration if it's a same-day pair
+                    if (inDate === outDate) {
+                        const inSeconds = parseTime12hToSeconds(lastIn.time);
+                        const outSeconds = parseTime12hToSeconds(record.time);
+                        
+                        if (outSeconds > inSeconds) {
+                            const duration = outSeconds - inSeconds;
+                            const summaryKey = `${rfid}_${inDate}`;
+                            
+                            // Add the calculated duration to the correct display group
+                            if (displayGroups[summaryKey]) {
+                                const currentDurationSeconds = parseDurationToSeconds(displayGroups[summaryKey].duration);
+                                displayGroups[summaryKey].duration = formatSecondsToDuration(currentDurationSeconds + duration);
+                            }
+                        }
+                    }
+                }
             }
-            
-            totalMinutes += diffMinutes;
         }
-        
-        const hours = Math.floor(totalMinutes / 60);
-        const minutes = Math.floor(totalMinutes % 60);
-        
-        record.duration = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:00`;
-    });
-    
-    return Object.values(grouped).sort((a, b) => new Date(b.date) - new Date(a.date));
-};
+    }
+
+    // Sort the in/out times within each group for clean display
+    for (const key in displayGroups) {
+       displayGroups[key].inTimes.sort((a,b) => parseTime12hToSeconds(a) - parseTime12hToSeconds(b));
+       displayGroups[key].outTimes.sort((a,b) => parseTime12hToSeconds(a) - parseTime12hToSeconds(b));
+    }
+
+    // Return the processed display groups, sorted to show the most recent activity first
+    return Object.values(displayGroups).sort((a, b) => b.latestTimestamp - a.latestTimestamp);
+}
+
     // Function to download attendance data as CSV
     const downloadAttendanceCSV = () => {
         if (processedAttendance.length === 0) {
@@ -264,8 +305,8 @@ const AttendanceReport = () => {
     
 
     return (
-        <Fragment>
-            <h1 className='text-2xl font-bold'>Attendance Management</h1>
+        <Fragment>      
+            <h1 className='text-2xl font-bold'>Attendance Report</h1>
             <div className='bg-white border rounded-lg p-4'>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
               <input
